@@ -7,11 +7,13 @@ struct PopoverView: View {
     @ViewState private var hoveredWPM: SparkChart.Point?
     @ViewState private var chartRange = ChartRange.today
 
-    init(monitor: KeyboardMonitor, redactsAddress: Bool = false, showsDetails: Bool = false, chartRange: ChartRange = .today) {
+    init(monitor: KeyboardMonitor, redactsAddress: Bool = false, showsDetails: Bool = false, chartRange: ChartRange = .today,
+         hoveredWPM: SparkChart.Point? = nil) {
         self.monitor = monitor
         self.redactsAddress = redactsAddress
         _showsDetails = ViewState(initialValue: showsDetails)
         _chartRange = ViewState(initialValue: chartRange)
+        _hoveredWPM = ViewState(initialValue: hoveredWPM)
     }
 
     var body: some View {
@@ -100,9 +102,10 @@ struct PopoverView: View {
                 }
                 let start = monitor.now.addingTimeInterval(-7 * 86_400)
                 let week = monitor.history.samples(since: start).map { SparkChart.Point(x: $0.date, y: Double($0.percent)) }
-                if week.count >= 2 {
+                // A chart only says something once the level has moved; until then the bar is clearer.
+                if Set(week.map(\.y)).count >= 2 {
                     SparkChart(points: week + [SparkChart.Point(x: monitor.now, y: week.last!.y)],
-                               color: Palette.battery(monitor.battery), yDomain: 0...100,
+                               color: Palette.battery(monitor.battery), yDomain: Self.zoomedDomain(week.map(\.y)),
                                xDomain: week.first!.x...monitor.now, interpolation: .stepEnd)
                         .frame(height: 36)
                 } else {
@@ -124,7 +127,7 @@ struct PopoverView: View {
         guard monitor.battery != nil else { return monitor.hasAccess ? "Waiting for keyboard" : "Needs permission" }
         switch monitor.trend {
         case .charging: return "Charging"
-        case .discharging(let remaining): return "About \(Format.duration(remaining)) left"
+        case .discharging(let remaining): return "About \(Format.longDuration(remaining)) left"
         case .unknown: return "Estimating time left"
         }
     }

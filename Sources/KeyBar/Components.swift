@@ -14,6 +14,14 @@ enum Format {
         return formatter.string(from: max(interval, 60)) ?? ""
     }
 
+    static func longDuration(_ interval: TimeInterval) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 1
+        formatter.allowedUnits = interval >= 86_400 ? [.day] : [.hour]
+        return formatter.string(from: interval) ?? ""
+    }
+
     static func countdown(_ interval: TimeInterval) -> String {
         let seconds = Int(interval)
         return String(format: "%d:%02d", seconds / 60, seconds % 60)

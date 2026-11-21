@@ -9,7 +9,11 @@ enum Snapshot {
         let monitor = KeyboardMonitor()
         DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) {
             monitor.popoverDidAppear()
-            let panel = PopoverView(monitor: monitor, redactsAddress: true, showsDetails: true, chartRange: chartRange)
+            // Show the chart hovered on the fastest minute, the way someone exploring it would.
+            let fastest = monitor.snapshot.timeline?.points.max { $0.wpm < $1.wpm }
+                .map { SparkChart.Point(x: $0.start, y: $0.wpm.rounded()) }
+            let panel = PopoverView(monitor: monitor, redactsAddress: true, showsDetails: true, chartRange: chartRange,
+                                    hoveredWPM: chartRange == .today ? fastest : nil)
                 .background(Color(white: 0.13), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.12)))
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
