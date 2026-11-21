@@ -12,7 +12,7 @@ macOS never shows a Keychron's battery level, even though the keyboard sends it.
 
 **Battery.** The real percentage, straight from the keyboard. KeyBar keeps a week of readings, so once the battery has drained a little it can tell you roughly how many days you have left. It notices when you plug in and warns you at 20%, 10% and 5%.
 
-**Typing speed.** Your words per minute right now, plus your average and best for the day. Below it is a minute-by-minute chart of the last hour: hover over it to see your speed at any minute. Only real characters count, so Backspace, arrow keys and shortcuts don't inflate the number, and a few seconds of fast typing can't set your best.
+**Typing speed.** Your words per minute right now, plus your average and best for the day. Below it is a chart of your day so far. It starts when you first typed and adjusts its detail to fit: minute by minute for a short session, grouped into 5 or 15 minute steps over a long day. The dashed line is your daily average, and hovering shows your speed at any point. Only real characters count, so Backspace, arrow keys and shortcuts don't inflate the number, and a few seconds of fast typing can't set your best.
 
 **Keystrokes and corrections.** How much you've typed today, how long you spent typing, and how often you reach for Backspace.
 

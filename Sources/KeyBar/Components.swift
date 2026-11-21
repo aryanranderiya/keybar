@@ -128,9 +128,11 @@ struct SparkChart: View {
     var xDomain: ClosedRange<Date>?
     var interpolation: InterpolationMethod = .monotone
     var hovered: Binding<Point?>?
+    /// A faint dashed line for context, e.g. the day's average.
+    var reference: Double?
 
     var body: some View {
-        let top = yDomain?.upperBound ?? max((points.map(\.y).max() ?? 1) * 1.15, 1)
+        let top = yDomain?.upperBound ?? max((points.map(\.y) + [reference ?? 0]).max()! * 1.15, 1)
         let selection = hovered?.wrappedValue
         Chart {
             ForEach(points) { point in
@@ -141,6 +143,11 @@ struct SparkChart: View {
                     .interpolationMethod(interpolation)
                     .foregroundStyle(color)
                     .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            }
+            if let reference {
+                RuleMark(y: .value("Reference", reference))
+                    .foregroundStyle(.secondary.opacity(0.35))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
             }
             if let selection {
                 RuleMark(x: .value("Time", selection.x))

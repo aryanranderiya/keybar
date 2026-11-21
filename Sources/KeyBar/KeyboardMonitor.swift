@@ -280,14 +280,7 @@ struct TypingSnapshot {
     var activeTime: TimeInterval = 0
     var correctionRate: Double?
     var lastKey: Date?
-    var chart: [TypingStats.Point] = []
-
-    static let chartSpan: TimeInterval = 60 * 60
-    private static let minimumChartSpan: TimeInterval = 10 * 60
-
-    func chartDomain(now: Date) -> ClosedRange<Date> {
-        (chart.first?.date ?? now.addingTimeInterval(-Self.minimumChartSpan))...now
-    }
+    var timeline: TypingStats.Timeline?
 
     init() {}
 
@@ -300,6 +293,6 @@ struct TypingSnapshot {
         activeTime = stats.activeSeconds
         correctionRate = stats.correctionRate
         lastKey = stats.lastKey
-        chart = stats.chart(endingAt: now, span: Self.chartSpan, minimumSpan: Self.minimumChartSpan)
+        timeline = stats.timeline(endingAt: now)
     }
 }

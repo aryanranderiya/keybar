@@ -131,38 +131,47 @@ struct PopoverView: View {
         let typing = monitor.snapshot
         let today = [typing.averageWPM.map { "avg \($0)" }, typing.peakWPM.map { "best \($0)" }]
             .compactMap { $0 }.joined(separator: " · ")
-        let points = typing.chart.map { SparkChart.Point(x: $0.date, y: $0.wpm.rounded()) }
-        let domain = typing.chartDomain(now: monitor.now)
+        let timeline = typing.timeline
+        let points = (timeline?.points ?? []).map { SparkChart.Point(x: $0.start, y: $0.wpm.rounded()) }
+        let hoveredRange = hoveredWPM.flatMap { hovered in timeline?.points.first { $0.start == hovered.x } }
         return Card {
             VStack(alignment: .leading, spacing: 6) {
                 CardTitle(title: "Typing speed", trailing: today.isEmpty ? nil : "Today: " + today)
                 HStack(alignment: .firstTextBaseline) {
                     bigNumber("\(hoveredWPM.map { Int($0.y) } ?? typing.liveWPM)", unit: "wpm")
                     Spacer()
-                    Text(hoveredWPM.map { $0.x.formatted(date: .omitted, time: .shortened) } ?? "Right now")
+                    Text(hoveredRange.map { timeRange($0, minutes: timeline!.minutesPerPoint) } ?? "Right now")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
-                if points.contains(where: { $0.y > 0 }), points.count >= 2 {
-                    SparkChart(points: points, color: Palette.typing, xDomain: domain, hovered: $hoveredWPM)
+                if let timeline, let first = points.first, points.contains(where: { $0.y > 0 }) {
+                    SparkChart(points: points, color: Palette.typing, xDomain: first.x...monitor.now,
+                               hovered: $hoveredWPM, reference: typing.averageWPM.map(Double.init))
                         .frame(height: 48)
                     HStack {
-                        Text(domain.lowerBound.formatted(date: .omitted, time: .shortened))
+                        Text(first.x.formatted(date: .omitted, time: .shortened))
                         Spacer()
-                        Text("Words per minute, each minute")
+                        Text(timeline.minutesPerPoint == 1 ? "Each minute" : "Every \(timeline.minutesPerPoint) min")
+                        if typing.averageWPM != nil { Text("· dashed = average") }
                         Spacer()
                         Text("Now")
                     }
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
                 } else {
-                    Text("A minute-by-minute chart of the last hour appears here as you type.")
+                    Text("Your speed through the day appears here as you type.")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, minHeight: 48)
                 }
             }
         }
+    }
+
+    private func timeRange(_ point: TypingStats.Point, minutes: Int) -> String {
+        let start = point.start.formatted(date: .omitted, time: .shortened)
+        guard minutes > 1 else { return start }
+        return "\(start) – \(point.end.formatted(date: .omitted, time: .shortened))"
     }
 
     private var tiles: some View {

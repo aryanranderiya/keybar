@@ -8,9 +8,16 @@ struct TypingStats: Codable {
     }
 
     struct Point: Identifiable {
-        let date: Date
+        let start: Date
+        let end: Date
         let wpm: Double
-        var id: Date { date }
+        var id: Date { start }
+    }
+
+    /// Today's speed, grouped so the whole day fits in a readable number of points.
+    struct Timeline {
+        let points: [Point]
+        let minutesPerPoint: Int
     }
 
     /// Gaps longer than this are pauses, not typing time.
@@ -23,6 +30,9 @@ struct TypingStats: Codable {
     /// A peak must be sustained, not a few seconds of fast typing.
     private static let minimumPeakSeconds: TimeInterval = 30
     private static let storageKey = "typingStats.v2"
+    private static let pointResolutions = [1, 2, 5, 10, 15, 30, 60]
+    private static let maximumPoints = 48
+    private static let minimumTimelineMinutes = 10
 
     private(set) var day: String
     private(set) var keys = 0
@@ -103,18 +113,25 @@ struct TypingStats: Codable {
         return total >= 50 ? Double(corrections) / Double(total) : nil
     }
 
-    /// One point per minute, quiet minutes reading zero. Spans from the first typing in the
-    /// window (at least `minimumSpan` back) until now.
-    func chart(endingAt now: Date, span: TimeInterval, minimumSpan: TimeInterval) -> [Point] {
+    /// From your first typing today until now. The point size grows with the span (1 minute for
+    /// a short session, up to an hour for a full day) so the line stays readable. Quiet stretches read zero.
+    func timeline(endingAt now: Date) -> Timeline? {
+        guard let firstTyped = buckets.keys.min() else { return nil }
         let end = Self.bucketIndex(now)
-        let windowStart = Self.bucketIndex(now.addingTimeInterval(-span))
-        guard let firstTyped = buckets.keys.filter({ $0 >= windowStart }).min() else { return [] }
-        let first = max(windowStart, min(firstTyped, end - Int(minimumSpan / Self.bucketLength)))
+        let span = max(end - firstTyped + 1, Self.minimumTimelineMinutes)
+        let size = Self.pointResolutions.first { span / $0 <= Self.maximumPoints } ?? Self.pointResolutions.last!
+        // Align groups to the clock (:00, :05, :10) so hover ranges read naturally.
+        let first = ((end - span + 1) / size) * size
         let midnight = Calendar.current.startOfDay(for: now)
-        return (first...end).map { index in
-            Point(date: midnight.addingTimeInterval(Double(index) * Self.bucketLength),
-                  wpm: buckets[index].flatMap(Self.wpm) ?? 0)
+        let points = stride(from: first, through: end, by: size).map { groupStart -> Point in
+            let group = (groupStart..<groupStart + size).compactMap { buckets[$0] }
+            let combined = Bucket(characters: group.map(\.characters).reduce(0, +),
+                                  activeSeconds: group.map(\.activeSeconds).reduce(0, +))
+            return Point(start: midnight.addingTimeInterval(Double(groupStart) * Self.bucketLength),
+                         end: midnight.addingTimeInterval(Double(groupStart + size) * Self.bucketLength),
+                         wpm: Self.wpm(combined) ?? 0)
         }
+        return Timeline(points: points, minutesPerPoint: size)
     }
 
     private static func wpm(_ bucket: Bucket) -> Double? {
@@ -126,8 +143,10 @@ struct TypingStats: Codable {
         Int(date.timeIntervalSince(Calendar.current.startOfDay(for: date)) / bucketLength)
     }
 
+    /// The local calendar day, so the stats roll over at your midnight.
     private static func dayStamp(_ date: Date) -> String {
-        date.formatted(.iso8601.year().month().day())
+        let day = Calendar.current.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", day.year!, day.month!, day.day!)
     }
 }
 
