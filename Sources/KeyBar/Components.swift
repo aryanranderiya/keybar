@@ -130,6 +130,7 @@ struct SparkChart: View {
     var hovered: Binding<Point?>?
     /// A faint dashed line for context, e.g. the day's average.
     var reference: Double?
+    var showsDots = false
 
     var body: some View {
         let top = yDomain?.upperBound ?? max((points.map(\.y) + [reference ?? 0]).max()! * 1.15, 1)
@@ -143,6 +144,11 @@ struct SparkChart: View {
                     .interpolationMethod(interpolation)
                     .foregroundStyle(color)
                     .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                if showsDots {
+                    PointMark(x: .value("Time", point.x), y: .value("Value", point.y))
+                        .foregroundStyle(color)
+                        .symbolSize(14)
+                }
             }
             if let reference {
                 RuleMark(y: .value("Reference", reference))
@@ -267,5 +273,58 @@ struct MenuRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+    }
+}
+
+enum ChartRange: CaseIterable {
+    case today, week, month
+
+    var days: Int {
+        switch self {
+        case .today: 1
+        case .week: 7
+        case .month: 30
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .today: "Today"
+        case .week: "7 days"
+        case .month: "30 days"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .today: "Today"
+        case .week: "7D"
+        case .month: "30D"
+        }
+    }
+}
+
+/// A compact segmented control drawn in SwiftUI so it matches the cards.
+struct RangePicker: View {
+    @Binding var selection: ChartRange
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(ChartRange.allCases, id: \.self) { range in
+                Button { selection = range } label: {
+                    Text(range.shortLabel)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(selection == range ? .primary : .secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(selection == range ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(.quaternary.opacity(0.4), in: Capsule())
+        .animation(.snappy(duration: 0.15), value: selection)
     }
 }

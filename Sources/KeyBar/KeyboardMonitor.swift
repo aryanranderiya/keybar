@@ -71,7 +71,8 @@ final class KeyboardMonitor {
     }
 
     // Keystrokes land here without touching observed state, so typing never re-renders anything.
-    @ObservationIgnored private var typing = TypingStats()
+    @ObservationIgnored private var typing = TypingStats(for: .now)
+    @ObservationIgnored private var typingHistory = TypingHistory()
     @ObservationIgnored private var typingDirty = false
     @ObservationIgnored private var keysThisSession = 0
     @ObservationIgnored private var watcher: HIDKeyboardWatcher?
@@ -84,6 +85,9 @@ final class KeyboardMonitor {
         showsPercentInMenuBar = defaults.bool(forKey: Keys.showPercent)
         lowBatteryAlerts = defaults.bool(forKey: Keys.alerts)
         battery = history.samples.last?.percent
+        if let stored = TypingStats.stored() {
+            if stored.isSameDay(as: .now) { typing = stored } else { typingHistory.archive(stored.summary) }
+        }
         batteryUpdated = history.samples.last?.date
 
         watcher = HIDKeyboardWatcher { [weak self] event in
@@ -177,6 +181,7 @@ final class KeyboardMonitor {
             history.record(percent)
             evaluateLowBattery(percent)
         case .keyDown(let usage):
+            rollOverIfNeeded(.now)
             typing.record(usage: usage, at: .now)
             typingDirty = true
             keysThisSession += 1
@@ -186,7 +191,8 @@ final class KeyboardMonitor {
 
     private func tick() {
         now = .now
-        snapshot = TypingSnapshot(stats: &typing, keysThisSession: keysThisSession, now: now)
+        rollOverIfNeeded(now)
+        snapshot = TypingSnapshot(stats: &typing, history: typingHistory, keysThisSession: keysThisSession, now: now)
         refreshSystemModes()
     }
 
@@ -194,6 +200,14 @@ final class KeyboardMonitor {
         guard !hasAccess, HIDKeyboardWatcher.hasInputMonitoringAccess else { return }
         hasAccess = true
         watcher?.openIfPossible()
+    }
+
+    /// At midnight, files the finished day into history and starts a new one.
+    private func rollOverIfNeeded(_ date: Date) {
+        guard !typing.isSameDay(as: date) else { return }
+        typingHistory.archive(typing.summary)
+        typing = TypingStats(for: date)
+        typingDirty = true
     }
 
     private func saveTyping() {
@@ -281,10 +295,13 @@ struct TypingSnapshot {
     var correctionRate: Double?
     var lastKey: Date?
     var timeline: TypingStats.Timeline?
+    /// Past days plus today, oldest first.
+    var days: [DaySummary] = []
 
     init() {}
 
-    init(stats: inout TypingStats, keysThisSession: Int, now: Date) {
+    init(stats: inout TypingStats, history: TypingHistory, keysThisSession: Int, now: Date) {
+        days = history.days + (stats.keys > 0 ? [stats.summary] : [])
         liveWPM = stats.liveWPM(at: now)
         averageWPM = stats.averageWPM
         peakWPM = stats.peakWPM

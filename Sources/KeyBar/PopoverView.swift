@@ -5,11 +5,13 @@ struct PopoverView: View {
     let redactsAddress: Bool
     @ViewState private var showsDetails: Bool
     @ViewState private var hoveredWPM: SparkChart.Point?
+    @ViewState private var chartRange = ChartRange.today
 
-    init(monitor: KeyboardMonitor, redactsAddress: Bool = false, showsDetails: Bool = false) {
+    init(monitor: KeyboardMonitor, redactsAddress: Bool = false, showsDetails: Bool = false, chartRange: ChartRange = .today) {
         self.monitor = monitor
         self.redactsAddress = redactsAddress
         _showsDetails = ViewState(initialValue: showsDetails)
+        _chartRange = ViewState(initialValue: chartRange)
     }
 
     var body: some View {
@@ -129,43 +131,104 @@ struct PopoverView: View {
 
     private var typingCard: some View {
         let typing = monitor.snapshot
-        let today = [typing.averageWPM.map { "avg \($0)" }, typing.peakWPM.map { "best \($0)" }]
-            .compactMap { $0 }.joined(separator: " · ")
-        let timeline = typing.timeline
-        let points = (timeline?.points ?? []).map { SparkChart.Point(x: $0.start, y: $0.wpm.rounded()) }
-        let hoveredRange = hoveredWPM.flatMap { hovered in timeline?.points.first { $0.start == hovered.x } }
+        let hasHistory = typing.days.count >= 2
+        let range = hasHistory ? chartRange : .today
         return Card {
             VStack(alignment: .leading, spacing: 6) {
-                CardTitle(title: "Typing speed", trailing: today.isEmpty ? nil : "Today: " + today)
-                HStack(alignment: .firstTextBaseline) {
-                    bigNumber("\(hoveredWPM.map { Int($0.y) } ?? typing.liveWPM)", unit: "wpm")
+                HStack {
+                    Text("Typing speed").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     Spacer()
-                    Text(hoveredRange.map { timeRange($0, minutes: timeline!.minutesPerPoint) } ?? "Right now")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                    if hasHistory { RangePicker(selection: $chartRange) }
                 }
-                if let timeline, let first = points.first, points.contains(where: { $0.y > 0 }) {
-                    SparkChart(points: points, color: Palette.typing, xDomain: first.x...monitor.now,
-                               hovered: $hoveredWPM, reference: typing.averageWPM.map(Double.init))
-                        .frame(height: 48)
-                    HStack {
-                        Text(first.x.formatted(date: .omitted, time: .shortened))
-                        Spacer()
-                        Text(timeline.minutesPerPoint == 1 ? "Each minute" : "Every \(timeline.minutesPerPoint) min")
-                        if typing.averageWPM != nil { Text("· dashed = average") }
-                        Spacer()
-                        Text("Now")
-                    }
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                } else {
-                    Text("Your speed through the day appears here as you type.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                }
+                .onChange(of: chartRange) { hoveredWPM = nil }
+                if range == .today { todayChart(typing) } else { daysChart(typing, range: range) }
             }
         }
+    }
+
+    @ViewBuilder
+    private func todayChart(_ typing: TypingSnapshot) -> some View {
+        let timeline = typing.timeline
+        let points = (timeline?.points ?? []).map { SparkChart.Point(x: $0.start, y: $0.wpm.rounded()) }
+        let hoveredPoint = hoveredWPM.flatMap { hovered in timeline?.points.first { $0.start == hovered.x } }
+        HStack(alignment: .firstTextBaseline) {
+            bigNumber("\(hoveredWPM.map { Int($0.y) } ?? typing.liveWPM)", unit: "wpm")
+            Spacer()
+            Text(hoveredPoint.map { timeRange($0, minutes: timeline!.minutesPerPoint) } ?? "Right now")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        if let timeline, let first = points.first, points.contains(where: { $0.y > 0 }) {
+            SparkChart(points: points, color: Palette.typing, xDomain: first.x...monitor.now,
+                       hovered: $hoveredWPM, reference: typing.averageWPM.map(Double.init))
+                .frame(height: 48)
+            chartFooter(start: first.x.formatted(date: .omitted, time: .shortened),
+                        middle: timeline.minutesPerPoint == 1 ? "each minute" : "every \(timeline.minutesPerPoint) min",
+                        end: "Now", stats: [typing.averageWPM.map { "avg \($0)" }, typing.peakWPM.map { "best \($0)" }])
+        } else {
+            Text("Your speed through the day appears here as you type.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, minHeight: 48)
+        }
+    }
+
+    @ViewBuilder
+    private func daysChart(_ typing: TypingSnapshot, range: ChartRange) -> some View {
+        let start = Calendar.current.startOfDay(for: monitor.now).addingTimeInterval(-Double(range.days - 1) * 86_400)
+        let days = typing.days.filter { $0.date >= start && $0.averageWPM != nil }
+        let points = days.map { SparkChart.Point(x: $0.date, y: Double($0.averageWPM!)) }
+        let hoveredDay = hoveredWPM.flatMap { hovered in days.first { $0.date == hovered.x } }
+        let rangeAverage = Self.weightedAverage(days)
+        HStack(alignment: .firstTextBaseline) {
+            bigNumber("\(hoveredDay?.averageWPM ?? rangeAverage ?? 0)", unit: "wpm")
+            Spacer()
+            Text(hoveredDay.map { "\($0.date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) · \($0.keys.formatted()) keys" }
+                 ?? "Average, \(range.label.lowercased())")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        if let first = points.first, points.count >= 2 {
+            SparkChart(points: points, color: Palette.typing, yDomain: Self.zoomedDomain(points.map(\.y)),
+                       xDomain: first.x...Calendar.current.startOfDay(for: monitor.now),
+                       hovered: $hoveredWPM, reference: rangeAverage.map(Double.init), showsDots: true)
+                .frame(height: 48)
+            chartFooter(start: first.x.formatted(.dateTime.month(.abbreviated).day()), middle: "daily average",
+                        end: "Today", stats: [days.compactMap(\.peakWPM).max().map { "best \($0)" }])
+        } else {
+            Text("Not enough typing in this range yet.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, minHeight: 48)
+        }
+    }
+
+    private func chartFooter(start: String, middle: String, end: String, stats: [String?]) -> some View {
+        HStack {
+            Text(start)
+            Spacer()
+            Text(([middle] + stats.compactMap { $0 }).joined(separator: " · "))
+            Spacer()
+            Text(end)
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(.tertiary)
+        .lineLimit(1)
+    }
+
+    /// Fits the y-axis to the data so day-to-day changes are visible rather than flattened against zero.
+    private static func zoomedDomain(_ values: [Double]) -> ClosedRange<Double> {
+        let low = values.min() ?? 0, high = values.max() ?? 1
+        let padding = max((high - low) * 0.25, 5)
+        return max(low - padding, 0)...(high + padding)
+    }
+
+    /// Average speed across days, weighted by how long each day was spent typing.
+    private static func weightedAverage(_ days: [DaySummary]) -> Int? {
+        let seconds = days.map(\.activeSeconds).reduce(0, +)
+        guard seconds >= 60 else { return nil }
+        let characters = Double(days.map(\.characters).reduce(0, +))
+        return Int((characters / TypingStats.charactersPerWord / (seconds / 60)).rounded())
     }
 
     private func timeRange(_ point: TypingStats.Point, minutes: Int) -> String {

@@ -6,7 +6,8 @@ struct KeyBarApp: App {
 
     init() {
         if let index = CommandLine.arguments.firstIndex(of: "--snapshot"), index + 1 < CommandLine.arguments.count {
-            Snapshot.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+            let week = CommandLine.arguments.contains("--week")
+            Snapshot.render(to: URL(fileURLWithPath: CommandLine.arguments[index + 1]), chartRange: week ? .week : .today)
         }
     }
 

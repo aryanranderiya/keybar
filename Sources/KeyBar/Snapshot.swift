@@ -5,11 +5,11 @@ import SwiftUI
 enum Snapshot {
     private static let settleDelay: TimeInterval = 4
 
-    static func render(to url: URL) {
+    static func render(to url: URL, chartRange: ChartRange = .today) {
         let monitor = KeyboardMonitor()
         DispatchQueue.main.asyncAfter(deadline: .now() + settleDelay) {
             monitor.popoverDidAppear()
-            let panel = PopoverView(monitor: monitor, redactsAddress: true, showsDetails: true)
+            let panel = PopoverView(monitor: monitor, redactsAddress: true, showsDetails: true, chartRange: chartRange)
                 .background(Color(white: 0.13), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.12)))
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 10)

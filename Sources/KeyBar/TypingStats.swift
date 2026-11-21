@@ -23,7 +23,7 @@ struct TypingStats: Codable {
     /// Gaps longer than this are pauses, not typing time.
     static let pauseThreshold: TimeInterval = 5
     static let bucketLength: TimeInterval = 60
-    private static let charactersPerWord = 5.0
+    static let charactersPerWord = 5.0
     private static let liveWindow: TimeInterval = 30
     private static let minimumLiveSpan: TimeInterval = 8
     private static let minimumCharacters = 20
@@ -47,14 +47,19 @@ struct TypingStats: Codable {
         case day, keys, characters, corrections, activeSeconds, buckets
     }
 
-    init() {
-        let stored = UserDefaults.standard.data(forKey: Self.storageKey)
-            .flatMap { try? JSONDecoder().decode(TypingStats.self, from: $0) }
-        let today = Self.dayStamp(.now)
-        self = stored?.day == today ? stored! : TypingStats(day: today)
+    /// Whatever was saved last, which may be an earlier day that still needs archiving.
+    static func stored() -> TypingStats? {
+        UserDefaults.standard.data(forKey: storageKey).flatMap { try? JSONDecoder().decode(TypingStats.self, from: $0) }
     }
 
-    private init(day: String) { self.day = day }
+    init(for date: Date) { day = Self.dayStamp(date) }
+
+    func isSameDay(as date: Date) -> Bool { day == Self.dayStamp(date) }
+
+    var summary: DaySummary {
+        DaySummary(day: day, keys: keys, characters: characters, corrections: corrections,
+                   activeSeconds: activeSeconds, peakWPM: peakWPM)
+    }
 
     func save() {
         if let data = try? JSONEncoder().encode(self) {
@@ -63,8 +68,6 @@ struct TypingStats: Codable {
     }
 
     mutating func record(usage: UInt32, at date: Date) {
-        let stamp = Self.dayStamp(date)
-        if stamp != day { self = TypingStats(day: stamp) }
         let bucket = Self.bucketIndex(date)
         if let lastKey, date.timeIntervalSince(lastKey) < Self.pauseThreshold {
             let gap = date.timeIntervalSince(lastKey)
@@ -96,10 +99,7 @@ struct TypingStats: Codable {
         return Int((Double(recentCharacters.count) / Self.charactersPerWord / minutes).rounded())
     }
 
-    var averageWPM: Int? {
-        guard activeSeconds >= 60 else { return nil }
-        return Int((Double(characters) / Self.charactersPerWord / (activeSeconds / 60)).rounded())
-    }
+    var averageWPM: Int? { summary.averageWPM }
 
     var peakWPM: Int? {
         buckets.values
@@ -107,11 +107,7 @@ struct TypingStats: Codable {
             .compactMap(Self.wpm).max().map { Int($0.rounded()) }
     }
 
-    /// Share of keystrokes that were Backspace.
-    var correctionRate: Double? {
-        let total = characters + corrections
-        return total >= 50 ? Double(corrections) / Double(total) : nil
-    }
+    var correctionRate: Double? { summary.correctionRate }
 
     /// From your first typing today until now. The point size grows with the span (1 minute for
     /// a short session, up to an hour for a full day) so the line stays readable. Quiet stretches read zero.
@@ -144,7 +140,7 @@ struct TypingStats: Codable {
     }
 
     /// The local calendar day, so the stats roll over at your midnight.
-    private static func dayStamp(_ date: Date) -> String {
+    static func dayStamp(_ date: Date) -> String {
         let day = Calendar.current.dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", day.year!, day.month!, day.day!)
     }
