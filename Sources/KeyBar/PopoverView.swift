@@ -71,7 +71,7 @@ struct PopoverView: View {
             guard let lastSeen else { return "Not connected" }
             return "Last seen " + lastSeen.formatted(.relative(presentation: .named))
         case .notPaired:
-            return "No Keychron paired"
+            return "No Bluetooth keyboard paired"
         }
     }
 
@@ -115,8 +115,24 @@ struct PopoverView: View {
                     LevelBar(fraction: Double(monitor.battery ?? 0) / 100, color: Palette.battery(monitor.battery))
                         .padding(.vertical, 4)
                 }
+                if let health = batteryHealth {
+                    Text(health).font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
             }
         }
+    }
+
+    /// How long a full charge lasts, and how that compares with the first one measured.
+    private var batteryHealth: String? {
+        let lives = monitor.history.chargeLives
+        guard let latest = lives.last else { return nil }
+        let days = Int(latest.daysPerCharge.rounded())
+        var text = "A full charge lasts about \(days) days"
+        if let first = lives.first, latest.measuredAt.timeIntervalSince(first.measuredAt) >= 30 * 86_400,
+           abs(first.daysPerCharge - latest.daysPerCharge) >= 1 {
+            text += " · \(Int(first.daysPerCharge.rounded())) in \(first.measuredAt.formatted(.dateTime.month(.abbreviated)))"
+        }
+        return text
     }
 
     private var batteryUpdatedText: String? {
@@ -271,10 +287,16 @@ struct PopoverView: View {
             GridRow {
                 StatTile(title: "Caps Lock", symbol: "capslock", value: monitor.capsLockOn ? "On" : "Off",
                          caption: monitor.capsLockOn ? "Typing in capitals" : "Lowercase", isHighlighted: monitor.capsLockOn)
-                sleepTile
+                if monitor.isKeychron { sleepTile } else { sessionTile }
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var sessionTile: some View {
+        let session = monitor.sessionStart.map { monitor.now.timeIntervalSince($0) } ?? 0
+        return StatTile(title: "Connected", symbol: "dot.radiowaves.left.and.right",
+                        value: Format.duration(session), caption: "This session")
     }
 
     private var sleepTile: some View {
@@ -330,7 +352,7 @@ struct PopoverView: View {
                     .renderingMode(.template)
                     .foregroundStyle(.secondary)
                 Text(monitor.connection == .notPaired
-                     ? "Pair your Keychron in Bluetooth settings to see it here."
+                     ? "Pair a Bluetooth keyboard in Bluetooth settings to see it here."
                      : "Press any key to wake the keyboard, or connect it below.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)

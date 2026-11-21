@@ -12,7 +12,7 @@ enum Snapshot {
             // Show the chart hovered on the fastest minute, the way someone exploring it would.
             let fastest = monitor.snapshot.timeline?.points.max { $0.wpm < $1.wpm }
                 .map { SparkChart.Point(x: $0.start, y: $0.wpm.rounded()) }
-            let panel = PopoverView(monitor: monitor, redactsAddress: true, showsDetails: true, chartRange: chartRange,
+            let panel = PopoverView(monitor: monitor, redactsAddress: true, showsDetails: false, chartRange: chartRange,
                                     hoveredWPM: chartRange == .today ? fastest : nil)
                 .background(Color(white: 0.13), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.12)))

@@ -3,13 +3,19 @@ import IOBluetooth
 
 /// The paired Bluetooth record for the keyboard: link control and firmware.
 enum BluetoothLink {
-    static func pairedKeychron(preferring address: String?) -> IOBluetoothDevice? {
+    private static let peripheralMajorClass = UInt32(kBluetoothDeviceClassMajorPeripheral)
+    /// Bit 4 of a peripheral's minor class marks a keyboard (Bluetooth Assigned Numbers, Class of Device).
+    private static let keyboardMinorBit: UInt32 = 0x10
+
+    static func pairedKeyboard(preferring address: String?) -> IOBluetoothDevice? {
         let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
-        let keychrons = paired.filter { $0.name?.localizedCaseInsensitiveContains("keychron") == true }
-        if let address, let match = keychrons.first(where: { normalized($0.addressString) == normalized(address) }) {
+        let keyboards = paired.filter {
+            $0.deviceClassMajor == peripheralMajorClass && $0.deviceClassMinor & keyboardMinorBit != 0
+        }
+        if let address, let match = keyboards.first(where: { normalized($0.addressString) == normalized(address) }) {
             return match
         }
-        return keychrons.first(where: { $0.isConnected() }) ?? keychrons.first
+        return keyboards.first(where: { $0.isConnected() }) ?? keyboards.first
     }
 
     /// Firmware version as System Information reports it (the only public source for it).

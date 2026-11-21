@@ -20,7 +20,7 @@ enum HIDEvent {
     case keyDown(usage: UInt32)
 }
 
-/// Watches Bluetooth HID keyboards whose product name contains "Keychron" and streams their events.
+/// Watches the first connected Bluetooth keyboard and streams its battery and keystrokes.
 final class HIDKeyboardWatcher {
     private enum Usage {
         static let genericDevicePage: UInt32 = 0x06
@@ -77,9 +77,14 @@ final class HIDKeyboardWatcher {
         pollBattery()
     }
 
-    /// Asks the keyboard for its current battery report instead of waiting for it to push one.
+    /// Asks for the current battery level instead of waiting for the keyboard to push one.
     func pollBattery() {
-        guard let device, isOpen, let element = batteryElement(of: device) else { return }
+        guard let device else { return }
+        if let percent = registryBatteryPercent(device) {
+            emitBattery(percent)
+            return
+        }
+        guard isOpen, let element = batteryElement(of: device) else { return }
         let reportID = IOHIDElementGetReportID(element)
         let size = (IOHIDDeviceGetProperty(device, kIOHIDMaxInputReportSizeKey as CFString) as? Int) ?? 64
         var report = [UInt8](repeating: 0, count: max(size, 2))
@@ -92,10 +97,31 @@ final class HIDKeyboardWatcher {
         if IOHIDDeviceGetValue(device, element, &value) == kIOReturnSuccess,
            (1...100).contains(IOHIDValueGetIntegerValue(value.takeUnretainedValue())) {
             emitBattery(IOHIDValueGetIntegerValue(value.takeUnretainedValue()))
-        } else if length >= 2 {
-            // Keychron's battery report is [reportID, percent]; read it directly if the element cache is stale.
+        } else if length >= 2, isOnlyField(element, in: device), IOHIDElementGetReportSize(element) == 8 {
+            // The report is [reportID, percent]; read it directly when the element cache is stale.
             emitBattery(Int(report[1]))
         }
+    }
+
+    private func isOnlyField(_ element: IOHIDElement, in device: IOHIDDevice) -> Bool {
+        let all = (IOHIDDeviceCopyMatchingElements(device, nil, IOOptionBits(kIOHIDOptionsTypeNone)) as? [IOHIDElement]) ?? []
+        let fields = all.filter {
+            IOHIDElementGetReportID($0) == IOHIDElementGetReportID(element) && IOHIDElementGetType($0) != kIOHIDElementTypeCollection
+        }
+        return fields.count == 1
+    }
+
+    /// Keyboards that macOS already understands (Apple's Magic Keyboard, for one) publish their level
+    /// in the I/O Registry as BatteryPercent, readable without Input Monitoring.
+    private func registryBatteryPercent(_ device: IOHIDDevice) -> Int? {
+        let service = IOHIDDeviceGetService(device)
+        guard service != IO_OBJECT_NULL else { return nil }
+        for direction in [kIORegistryIterateRecursively, kIORegistryIterateRecursively | kIORegistryIterateParents] {
+            let value = IORegistryEntrySearchCFProperty(service, kIOServicePlane, "BatteryPercent" as CFString,
+                                                        kCFAllocatorDefault, IOOptionBits(direction))
+            if let percent = value as? Int, (1...100).contains(percent) { return percent }
+        }
+        return nil
     }
 
     private func batteryElement(of device: IOHIDDevice) -> IOHIDElement? {
@@ -108,12 +134,13 @@ final class HIDKeyboardWatcher {
     }
 
     private func deviceMatched(_ device: IOHIDDevice) {
+        guard self.device == nil else { return }
         let name = stringProperty(device, kIOHIDProductKey)
-        guard name.localizedCaseInsensitiveContains("keychron") else { return }
         self.device = device
         isOpen = false
         onEvent(.attached(info(for: device, name: name)))
         openIfPossible()
+        pollBattery()
     }
 
     private func deviceRemoved(_ device: IOHIDDevice) {
@@ -151,7 +178,7 @@ final class HIDKeyboardWatcher {
             manufacturer: stringProperty(device, kIOHIDManufacturerKey),
             reportIntervalMicros: intProperty(device, kIOHIDReportIntervalKey),
             hidVersion: intProperty(device, kIOHIDVersionNumberKey),
-            hasBatteryReport: reportDescriptorDeclaresBattery(device)
+            hasBatteryReport: reportDescriptorDeclaresBattery(device) || registryBatteryPercent(device) != nil
         )
     }
 

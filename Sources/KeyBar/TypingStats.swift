@@ -27,8 +27,10 @@ struct TypingStats: Codable {
     private static let liveWindow: TimeInterval = 30
     private static let minimumLiveSpan: TimeInterval = 8
     private static let minimumCharacters = 20
-    /// A peak must be sustained, not a few seconds of fast typing.
-    private static let minimumPeakSeconds: TimeInterval = 30
+    /// Speeds assume at least this much typing, so a few seconds of fast typing can't read as a record.
+    private static let minimumTypingSeconds: TimeInterval = 30
+    /// Each chart point averages with its neighbours, so short pauses don't drop the line to zero.
+    private static let smoothingRadius = 1
     private static let storageKey = "typingStats.v2"
     private static let pointResolutions = [1, 2, 5, 10, 15, 30, 60]
     private static let maximumPoints = 48
@@ -102,9 +104,10 @@ struct TypingStats: Codable {
     var averageWPM: Int? { summary.averageWPM }
 
     var peakWPM: Int? {
-        buckets.values
-            .filter { $0.activeSeconds >= Self.minimumPeakSeconds }
-            .compactMap(Self.wpm).max().map { Int($0.rounded()) }
+        // The same pooled minute-by-minute speed the chart draws, so "best" is the chart's highest point.
+        buckets.keys.compactMap { minute in
+            Self.wpm(Self.pooled((minute - Self.smoothingRadius...minute + Self.smoothingRadius).compactMap { buckets[$0] }))
+        }.max().map { Int($0.rounded()) }
     }
 
     var correctionRate: Double? { summary.correctionRate }
@@ -119,20 +122,27 @@ struct TypingStats: Codable {
         // Align groups to the clock (:00, :05, :10) so hover ranges read naturally.
         let first = ((end - span + 1) / size) * size
         let midnight = Calendar.current.startOfDay(for: now)
-        let points = stride(from: first, through: end, by: size).map { groupStart -> Point in
-            let group = (groupStart..<groupStart + size).compactMap { buckets[$0] }
-            let combined = Bucket(characters: group.map(\.characters).reduce(0, +),
-                                  activeSeconds: group.map(\.activeSeconds).reduce(0, +))
-            return Point(start: midnight.addingTimeInterval(Double(groupStart) * Self.bucketLength),
-                         end: midnight.addingTimeInterval(Double(groupStart + size) * Self.bucketLength),
-                         wpm: Self.wpm(combined) ?? 0)
+        let starts = Array(stride(from: first, through: end, by: size))
+        let groups = starts.map { Self.pooled(($0..<$0 + size).compactMap { buckets[$0] }) }
+        let points = starts.indices.map { index -> Point in
+            // Pool the neighbours' characters and typing time: an average weighted by how much you typed.
+            let window = groups[max(index - Self.smoothingRadius, 0)...min(index + Self.smoothingRadius, groups.count - 1)]
+            return Point(start: midnight.addingTimeInterval(Double(starts[index]) * Self.bucketLength),
+                         end: midnight.addingTimeInterval(Double(starts[index] + size) * Self.bucketLength),
+                         wpm: Self.wpm(Self.pooled(window)) ?? 0)
         }
         return Timeline(points: points, minutesPerPoint: size)
     }
 
+    private static func pooled(_ buckets: some Sequence<Bucket>) -> Bucket {
+        buckets.reduce(Bucket()) {
+            Bucket(characters: $0.characters + $1.characters, activeSeconds: $0.activeSeconds + $1.activeSeconds)
+        }
+    }
+
     private static func wpm(_ bucket: Bucket) -> Double? {
         guard bucket.characters >= minimumCharacters else { return nil }
-        return Double(bucket.characters) / charactersPerWord / (max(bucket.activeSeconds, 15) / 60)
+        return Double(bucket.characters) / charactersPerWord / (max(bucket.activeSeconds, minimumTypingSeconds) / 60)
     }
 
     private static func bucketIndex(_ date: Date) -> Int {

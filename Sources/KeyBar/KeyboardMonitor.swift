@@ -15,11 +15,14 @@ enum ConnectionState: Equatable {
 @Observable
 final class KeyboardMonitor {
     /// Keychron K-series boards sleep after 10 minutes without a keypress in Bluetooth mode.
+    /// Other keyboards don't publish their timeout, so the countdown is Keychron-only.
     static let autoSleepAfter: TimeInterval = 10 * 60
     private static let batteryPollInterval: TimeInterval = 10 * 60
     private static let saveInterval: TimeInterval = 30
     private static let lowBatteryThresholds = [20, 10, 5]
     private static let alertResetLevel = 30
+    /// Nudge to charge once the estimate says the battery runs out within this long.
+    private static let chargeReminderLead: TimeInterval = 2 * 86_400
 
     // Connection and battery: change rarely, published as they happen.
     private(set) var connection: ConnectionState = .notPaired
@@ -67,6 +70,7 @@ final class KeyboardMonitor {
         static let lastAddress = "lastAddress"
         static let lastSeen = "lastSeen"
         static let lastAlert = "lastAlertThreshold"
+        static let chargeReminderSent = "chargeReminderSent"
         static func firmware(_ address: String) -> String { "firmware-\(address)" }
     }
 
@@ -108,7 +112,8 @@ final class KeyboardMonitor {
 
     // MARK: Derived
 
-    var displayName: String { info?.name ?? pairedName ?? "Keychron" }
+    var displayName: String { info?.name ?? pairedName ?? "Keyboard" }
+    var isKeychron: Bool { displayName.localizedCaseInsensitiveContains("keychron") }
     var isConnected: Bool { connection == .connected }
     var supportsBattery: Bool { info?.hasBatteryReport ?? true }
     var trend: BatteryTrend { history.trend }
@@ -120,7 +125,7 @@ final class KeyboardMonitor {
 
     /// Seconds until the keyboard's own idle timer puts it to sleep, once we have seen a keypress.
     var sleepCountdown: TimeInterval? {
-        guard isConnected, let lastKey = snapshot.lastKey else { return nil }
+        guard isConnected, isKeychron, let lastKey = snapshot.lastKey else { return nil }
         return max(0, Self.autoSleepAfter - now.timeIntervalSince(lastKey))
     }
 
@@ -145,7 +150,7 @@ final class KeyboardMonitor {
     }
 
     func toggleConnection() {
-        guard let device = BluetoothLink.pairedKeychron(preferring: info?.address ?? lastAddress) else { return }
+        guard let device = BluetoothLink.pairedKeyboard(preferring: info?.address ?? lastAddress) else { return }
         isTogglingLink = true
         Task { @MainActor in
             if device.isConnected() { device.closeConnection() } else { device.openConnection() }
@@ -229,7 +234,7 @@ final class KeyboardMonitor {
     private var lastAddress: String? { UserDefaults.standard.string(forKey: Keys.lastAddress) }
 
     private func refreshPairing() {
-        guard let device = BluetoothLink.pairedKeychron(preferring: info?.address ?? lastAddress) else {
+        guard let device = BluetoothLink.pairedKeyboard(preferring: info?.address ?? lastAddress) else {
             if info == nil { connection = .notPaired }
             return
         }
@@ -266,21 +271,38 @@ final class KeyboardMonitor {
 
     private func evaluateLowBattery(_ percent: Int) {
         let defaults = UserDefaults.standard
-        let lastAlert = defaults.object(forKey: Keys.lastAlert) as? Int ?? Int.max
-        if percent >= Self.alertResetLevel {
+        if percent >= Self.alertResetLevel || trend == .charging {
             defaults.removeObject(forKey: Keys.lastAlert)
-            return
+            defaults.removeObject(forKey: Keys.chargeReminderSent)
         }
-        guard lowBatteryAlerts,
+        guard lowBatteryAlerts else { return }
+        remindToChargeIfRunningOut(percent)
+        let lastAlert = defaults.object(forKey: Keys.lastAlert) as? Int ?? Int.max
+        guard percent < Self.alertResetLevel,
               let threshold = Self.lowBatteryThresholds.last(where: { percent <= $0 }),
               threshold < lastAlert else { return }
         defaults.set(threshold, forKey: Keys.lastAlert)
+        notify(id: "low-battery-\(threshold)", title: "\(displayName) battery low",
+               body: "\(percent)% left. Plug it in to keep typing wirelessly.")
+    }
+
+    /// Once per discharge: a heads-up a couple of days before the estimate says it runs out.
+    private func remindToChargeIfRunningOut(_ percent: Int) {
+        let defaults = UserDefaults.standard
+        guard case .discharging(let remaining) = trend, remaining <= Self.chargeReminderLead,
+              !defaults.bool(forKey: Keys.chargeReminderSent) else { return }
+        defaults.set(true, forKey: Keys.chargeReminderSent)
+        let runsOut = Date.now.addingTimeInterval(remaining)
+        notify(id: "charge-reminder", title: "Charge \(displayName) soon",
+               body: "\(percent)% left. At your usual pace it runs out around \(runsOut.formatted(.dateTime.weekday(.wide).hour())).")
+    }
+
+    private func notify(id: String, title: String, body: String) {
         let content = UNMutableNotificationContent()
-        content.title = "\(displayName) battery low"
-        content.body = "\(percent)% left. Plug in the USB-C cable to keep typing wirelessly."
+        content.title = title
+        content.body = body
         content.sound = .default
-        let request = UNNotificationRequest(identifier: "low-battery-\(threshold)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 }
 

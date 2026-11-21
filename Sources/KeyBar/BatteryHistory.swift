@@ -6,6 +6,12 @@ struct BatterySample: Codable, Equatable, Identifiable {
     var id: Date { date }
 }
 
+/// How long one full charge lasted, measured from a real discharge.
+struct ChargeLife: Equatable {
+    let daysPerCharge: Double
+    let measuredAt: Date
+}
+
 enum BatteryTrend: Equatable {
     case unknown
     case charging
@@ -15,11 +21,15 @@ enum BatteryTrend: Equatable {
 /// Persisted battery readings, used for the chart, charge detection and the time-left estimate.
 struct BatteryHistory {
     private static let storageKey = "batteryHistory"
-    private static let retention: TimeInterval = 14 * 86_400
+    private static let retention: TimeInterval = 180 * 86_400
     private static let heartbeat: TimeInterval = 30 * 60
     private static let minimumSpan: TimeInterval = 6 * 3_600
     private static let minimumDrop = 2
     private static let chargingWindow: TimeInterval = 3 * 3_600
+    /// A discharge counts toward battery health once it covers at least a day and 10%.
+    private static let lifeMinimumSpan: TimeInterval = 86_400
+    private static let lifeMinimumDrop = 10
+    private static let chargeRise = 2
 
     private(set) var samples: [BatterySample]
 
@@ -47,17 +57,44 @@ struct BatteryHistory {
             .contains { $0.percent < latest.percent }
         if recentRise { return .charging }
 
-        // Walk back over the current discharge: stop at the first point where the level was lower (a charge).
+        // Walk back over the current discharge until a lower level (a charge). Keep the latest reading
+        // at each level, so time spent resting at the top doesn't count as draining.
         var start = latest
         for sample in samples.reversed().dropFirst() {
             if sample.percent < start.percent { break }
-            start = sample
+            if sample.percent > start.percent { start = sample }
         }
         let span = latest.date.timeIntervalSince(start.date)
         let drop = start.percent - latest.percent
         guard span >= Self.minimumSpan, drop >= Self.minimumDrop else { return .unknown }
         let secondsPerPercent = span / Double(drop)
         return .discharging(remaining: secondsPerPercent * Double(latest.percent))
+    }
+
+    /// Every discharge long enough to measure, oldest first, each scaled to a full 100%.
+    /// A rise of 2% or more over the run's lowest reading is a charge; a 1% wobble is not.
+    var chargeLives: [ChargeLife] {
+        var lives: [ChargeLife] = []
+        guard var start = samples.first else { return lives }
+        var lowest = start
+        for sample in samples.dropFirst() + [BatterySample(date: .distantFuture, percent: 200)] {
+            if sample.percent >= lowest.percent + Self.chargeRise {
+                let span = lowest.date.timeIntervalSince(start.date)
+                let drop = start.percent - lowest.percent
+                if span >= Self.lifeMinimumSpan, drop >= Self.lifeMinimumDrop {
+                    lives.append(ChargeLife(daysPerCharge: span / 86_400 * 100 / Double(drop), measuredAt: lowest.date))
+                }
+                start = sample
+                lowest = sample
+            } else if sample.percent >= start.percent, lowest.percent == start.percent {
+                // Still charging, or resting at the top: the discharge starts from the last reading up there.
+                start = sample
+                lowest = sample
+            } else if sample.percent <= lowest.percent {
+                lowest = sample
+            }
+        }
+        return lives
     }
 
     func samples(since date: Date) -> [BatterySample] {
