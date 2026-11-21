@@ -136,6 +136,8 @@ struct SparkChart: View {
     var xDomain: ClosedRange<Date>?
     var interpolation: InterpolationMethod = .monotone
     var hovered: Binding<Point?>?
+    /// What hovering snaps to, when it differs from the drawn points (e.g. every reading under a simplified line).
+    var hoverTargets: [Point]?
     /// A faint dashed line for context, e.g. the day's average.
     var reference: Double?
     var showsDots = false
@@ -184,7 +186,7 @@ struct SparkChart: View {
                         switch phase {
                         case .active(let location):
                             guard let date: Date = proxy.value(atX: location.x) else { return }
-                            hovered.wrappedValue = points.min { abs($0.x.timeIntervalSince(date)) < abs($1.x.timeIntervalSince(date)) }
+                            hovered.wrappedValue = (hoverTargets ?? points).min { abs($0.x.timeIntervalSince(date)) < abs($1.x.timeIntervalSince(date)) }
                         case .ended:
                             hovered.wrappedValue = nil
                         }

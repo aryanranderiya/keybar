@@ -5,6 +5,7 @@ struct PopoverView: View {
     let redactsAddress: Bool
     @ViewState private var showsDetails: Bool
     @ViewState private var hoveredWPM: SparkChart.Point?
+    @ViewState private var hoveredBattery: SparkChart.Point?
     @ViewState private var chartRange = ChartRange.today
 
     init(monitor: KeyboardMonitor, redactsAddress: Bool = false, showsDetails: Bool = false, chartRange: ChartRange = .today,
@@ -96,17 +97,19 @@ struct PopoverView: View {
             VStack(alignment: .leading, spacing: 6) {
                 CardTitle(title: "Battery", trailing: batteryUpdatedText)
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    bigNumber(monitor.battery.map(String.init) ?? "--", unit: "%")
+                    bigNumber(hoveredBattery.map { "\(Int($0.y))" } ?? monitor.battery.map(String.init) ?? "--", unit: "%")
                     Spacer()
-                    Text(batteryCaption).font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(hoveredBattery.map { $0.x.formatted(.dateTime.weekday(.abbreviated).hour().minute()) } ?? batteryCaption)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
                 let start = monitor.now.addingTimeInterval(-7 * 86_400)
                 let week = monitor.history.samples(since: start).map { SparkChart.Point(x: $0.date, y: Double($0.percent)) }
                 // A chart only says something once the level has moved; until then the bar is clearer.
                 if Set(week.map(\.y)).count >= 2 {
-                    SparkChart(points: week + [SparkChart.Point(x: monitor.now, y: week.last!.y)],
+                    SparkChart(points: Self.turningPoints(week) + [SparkChart.Point(x: monitor.now, y: week.last!.y)],
                                color: Palette.battery(monitor.battery), yDomain: Self.zoomedDomain(week.map(\.y)),
-                               xDomain: week.first!.x...monitor.now, interpolation: .stepEnd)
+                               xDomain: week.first!.x...monitor.now, hovered: $hoveredBattery, hoverTargets: week)
                         .frame(height: 36)
                 } else {
                     LevelBar(fraction: Double(monitor.battery ?? 0) / 100, color: Palette.battery(monitor.battery))
@@ -217,6 +220,21 @@ struct PopoverView: View {
         .font(.system(size: 10))
         .foregroundStyle(.tertiary)
         .lineLimit(1)
+    }
+
+    /// The battery only reports whole percents, so raw samples form a staircase. Keeping just the
+    /// first and last readings and each point where the level turns (a charge starting or ending)
+    /// draws the real shape: smooth drains and recharges.
+    private static func turningPoints(_ points: [SparkChart.Point]) -> [SparkChart.Point] {
+        guard points.count > 2 else { return points }
+        var kept = [points[0]]
+        for index in 1..<(points.count - 1) {
+            let before = points[index].y - kept.last!.y
+            let after = points[index + 1].y - points[index].y
+            if before * after < 0 { kept.append(points[index]) }
+        }
+        kept.append(points[points.count - 1])
+        return kept
     }
 
     /// Fits the y-axis to the data so day-to-day changes are visible rather than flattened against zero.
