@@ -1,61 +1,70 @@
 # KeyBar
 
-A small menu bar app for Keychron keyboards connected over Bluetooth.
+A small menu bar app for your Bluetooth keyboard.
 
-macOS never shows a Keychron's battery level, even though the keyboard sends it. KeyBar reads it and puts it in your menu bar, with a few other things worth knowing about your keyboard.
+Most wireless keyboards tell your Mac their battery level, and macOS never shows it. KeyBar does, along with how fast you type and a few other things worth knowing.
 
 <p align="center">
-  <img src="docs/popover.png" width="400" alt="The KeyBar popover: battery level, typing speed, keystrokes and device details for a Keychron K6">
+  <img src="docs/popover.png" width="400" alt="The KeyBar popover: battery level and history, a typing speed chart, keystrokes and settings">
+</p>
+
+<p align="center">
+  <a href="https://github.com/aryanranderiya/keybar/releases/latest/download/KeyBar.dmg"><b>Download KeyBar</b></a>
+  &nbsp;·&nbsp; macOS 14 or later &nbsp;·&nbsp; Apple silicon and Intel
 </p>
 
 ## What it shows
 
-**Battery.** The real percentage, straight from the keyboard. KeyBar keeps a week of readings, so once the battery has drained a little it can tell you roughly how many days you have left. It notices when you plug in and warns you at 20%, 10% and 5%.
+**Battery.** The real percentage, straight from the keyboard, plus roughly how many days you have left. Hover the chart to see the level at any point in the past week.
 
-**Typing speed.** Your words per minute right now, plus your average and best for the day. Below it is a chart of your day so far. It starts when you first typed and adjusts its detail to fit: minute by minute for a short session, grouped into 5 or 15 minute steps over a long day. The dashed line is your daily average, and hovering shows your speed at any point.
+**Battery health.** After a few charges, KeyBar tells you how long a full charge really lasts, and how that compares with a few months ago. If 25 days has slipped to 15, you'll see it.
 
-Once you've used it for more than a day, a **Today · 7D · 30D** switch appears. The longer views show your average speed for each day, so you can see whether you're getting faster. Hover a day to see its date and how many keys you typed. KeyBar keeps 90 days of these daily totals. Only real characters count, so Backspace, arrow keys and shortcuts don't inflate the number, and a few seconds of fast typing can't set your best.
+**A reminder to charge.** A notification a couple of days before the battery is likely to run out, based on how fast it usually drains. There are also plain alerts at 20%, 10% and 5%.
 
-**Keystrokes and corrections.** How much you've typed today, how long you spent typing, and how often you reach for Backspace.
+**Typing speed.** Your words per minute right now, and a chart of your day so far. It starts when you first typed and adjusts its detail to fit, minute by minute for a short session or in 5 or 15 minute steps over a long day. Hover for your speed at any point. After a day or two, switch to the last 7 or 30 days to see if you're getting faster.
 
-**Auto-sleep.** Keychron boards go to sleep after 10 minutes without a keypress. Once you've stopped typing for a minute, KeyBar starts a countdown, so you know why the first key after a coffee break doesn't register.
+**Keystrokes and corrections.** How much you've typed today, how long you spent typing, and how often you reached for Backspace.
 
-**Caps Lock**, and in Device Details: firmware version, Bluetooth address, the rate the keyboard reports at (125 Hz on the K6), and whether your top row acts as media keys or F1–F12.
+**Auto-sleep** (Keychron). Keychron boards sleep after 10 minutes without a keypress. Once you stop typing, KeyBar counts down, so you know why the first key after a coffee break doesn't register.
 
-**Connect and disconnect** from the menu, without opening Bluetooth settings.
-
-## What it can't show
-
-Some things live entirely inside the keyboard and are never sent to your Mac:
-
-- the backlight effect and brightness
-- the position of the Mac / Windows switch
-- which Bluetooth slot (Fn + 1, 2 or 3) you're on
-
-The keyboard handles these in its own firmware. Its Bluetooth description lists every kind of data it can send, and none of these are on the list, so there's nothing for an app to read.
+**Details.** Firmware version, Bluetooth address, the rate the keyboard reports at, Caps Lock, and connect or disconnect in one click.
 
 ## Install
 
-You need macOS 14 or later and Swift (Xcode or the Command Line Tools).
+1. [Download KeyBar.dmg](https://github.com/aryanranderiya/keybar/releases/latest/download/KeyBar.dmg) and drag KeyBar into Applications.
+2. Open it. macOS will say it can't verify the developer, because KeyBar isn't signed with a paid Apple developer account. Go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+3. Click the keycap icon in your menu bar and allow **Input Monitoring** when asked.
+
+Input Monitoring is needed because your keyboard sends its battery level the same way it sends keypresses, so macOS treats reading one like reading the other. KeyBar only keeps counts and timings. It never stores which keys you pressed, and nothing leaves your Mac.
+
+## Which keyboards work
+
+Any keyboard connected over Bluetooth shows up, and typing stats work on all of them.
+
+The battery level needs the keyboard to report it. Most do, using the standard Bluetooth battery report or the way Apple's Magic Keyboard does it. If yours doesn't, the battery card says so.
+
+Tested on a Keychron K6.
+
+## What it can't show
+
+Some things stay inside the keyboard and are never sent to your Mac, so no app can read them:
+
+- the backlight effect and brightness
+- a Mac / Windows switch
+- which Bluetooth slot you're on
+
+## Build it yourself
+
+You need Swift (Xcode or the Command Line Tools).
 
 ```sh
 git clone https://github.com/aryanranderiya/keybar.git
 cd keybar
-./scripts/make-signing-cert.sh   # once
+./scripts/make-signing-cert.sh   # once, so Input Monitoring survives rebuilds
 ./scripts/build.sh --install
 ```
 
-This builds KeyBar and copies it to `~/Applications`.
-
-The first time you open KeyBar it asks for **Input Monitoring**. The keyboard sends its battery level the same way it sends keypresses, so macOS treats reading it as reading the keyboard. KeyBar keeps counts and timings only. It never stores which keys you pressed, and nothing leaves your Mac.
-
-The signing certificate step is optional, but worth it. Without it, macOS forgets the Input Monitoring permission every time you rebuild.
-
-## Which keyboards work
-
-Any Keychron that connects over Bluetooth and has "Keychron" in its name will show up. Battery level needs the keyboard to report it, which the K-series boards do. If yours doesn't, the battery card says so.
-
-It's been tested on a Keychron K6 with firmware 1.1.11.
+`./scripts/build.sh --release` builds for Apple silicon and Intel and packages `build/KeyBar.dmg`.
 
 ## License
 
