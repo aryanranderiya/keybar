@@ -30,6 +30,9 @@ struct BatteryHistory {
     private static let lifeMinimumSpan: TimeInterval = 86_400
     private static let lifeMinimumDrop = 10
     private static let chargeRise = 2
+    /// A gap this long with the level unchanged means the keyboard sat switched off, not in use.
+    private static let absenceGap: TimeInterval = 4 * 86_400
+    private static let absenceDrop = 1
 
     private(set) var samples: [BatterySample]
 
@@ -64,7 +67,7 @@ struct BatteryHistory {
             if sample.percent < start.percent { break }
             if sample.percent > start.percent { start = sample }
         }
-        let span = latest.date.timeIntervalSince(start.date)
+        let span = timeInUse(from: start.date, to: latest.date)
         let drop = start.percent - latest.percent
         guard span >= Self.minimumSpan, drop >= Self.minimumDrop else { return .unknown }
         let secondsPerPercent = span / Double(drop)
@@ -79,7 +82,7 @@ struct BatteryHistory {
         var lowest = start
         for sample in samples.dropFirst() + [BatterySample(date: .distantFuture, percent: 200)] {
             if sample.percent >= lowest.percent + Self.chargeRise {
-                let span = lowest.date.timeIntervalSince(start.date)
+                let span = timeInUse(from: start.date, to: lowest.date)
                 let drop = start.percent - lowest.percent
                 if span >= Self.lifeMinimumSpan, drop >= Self.lifeMinimumDrop {
                     lives.append(ChargeLife(daysPerCharge: span / 86_400 * 100 / Double(drop), measuredAt: lowest.date))
@@ -95,6 +98,17 @@ struct BatteryHistory {
             }
         }
         return lives
+    }
+
+    /// Time between two readings, leaving out stretches the keyboard spent switched off.
+    /// Nights and weekends stay in: they are part of how long a charge lasts you.
+    private func timeInUse(from start: Date, to end: Date) -> TimeInterval {
+        let run = samples.filter { $0.date >= start && $0.date <= end }
+        let absent = zip(run, run.dropFirst())
+            .filter { $1.date.timeIntervalSince($0.date) >= Self.absenceGap && $0.percent - $1.percent <= Self.absenceDrop }
+            .map { $1.date.timeIntervalSince($0.date) }
+            .reduce(0, +)
+        return end.timeIntervalSince(start) - absent
     }
 
     func samples(since date: Date) -> [BatterySample] {

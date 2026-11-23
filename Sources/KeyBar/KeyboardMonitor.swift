@@ -7,6 +7,9 @@ import UserNotifications
 
 enum ConnectionState: Equatable {
     case connected
+    /// The keyboard's own idle timer dropped the link; a keypress brings it back.
+    case asleep(since: Date)
+    /// Switched off, out of range, or on another device. The Mac can't tell these apart.
     case disconnected(lastSeen: Date?)
     case notPaired
 }
@@ -17,6 +20,14 @@ final class KeyboardMonitor {
     /// Keychron K-series boards sleep after 10 minutes without a keypress in Bluetooth mode.
     /// Other keyboards don't publish their timeout, so the countdown is Keychron-only.
     static let autoSleepAfter: TimeInterval = 10 * 60
+    /// A link that drops this close to the idle timeout (or later) is the keyboard going to sleep.
+    private static let sleepDetectionSlack: TimeInterval = 60
+    /// A keyboard that has been asleep this long is more likely off or flat than napping.
+    private static let asleepExpiry: TimeInterval = 12 * 3_600
+    /// Coming back within this long continues the session instead of starting a new one.
+    private static let sessionGrace: TimeInterval = 30 * 60
+    /// After the Mac wakes, a link drop reported this soon really happened when the Mac went to sleep.
+    private static let wakeSettleTime: TimeInterval = 60
     private static let batteryPollInterval: TimeInterval = 10 * 60
     private static let saveInterval: TimeInterval = 30
     private static let lowBatteryThresholds = [20, 10, 5]
@@ -69,6 +80,7 @@ final class KeyboardMonitor {
         static let alerts = "lowBatteryAlerts"
         static let lastAddress = "lastAddress"
         static let lastSeen = "lastSeen"
+        static let lastSeenAsleep = "lastSeenAsleep"
         static let lastAlert = "lastAlertThreshold"
         static let chargeReminderSent = "chargeReminderSent"
         static func firmware(_ address: String) -> String { "firmware-\(address)" }
@@ -79,6 +91,12 @@ final class KeyboardMonitor {
     @ObservationIgnored private var typingHistory = TypingHistory()
     @ObservationIgnored private var typingDirty = false
     @ObservationIgnored private var keysThisSession = 0
+    @ObservationIgnored private var lastKeyAt: Date?
+    @ObservationIgnored private var linkUpAt: Date?
+    @ObservationIgnored private var linkLostAt: Date?
+    @ObservationIgnored private var userDisconnected = false
+    @ObservationIgnored private var macSleptAt: Date?
+    @ObservationIgnored private var isPreview = false
     @ObservationIgnored private var watcher: HIDKeyboardWatcher?
     @ObservationIgnored private var ticker: Timer?
     @ObservationIgnored private var timers: [Timer] = []
@@ -99,13 +117,27 @@ final class KeyboardMonitor {
         }
         refreshPairing()
         timers = [
-            repeating(Self.batteryPollInterval) { $0.watcher?.pollBattery() },
+            repeating(Self.batteryPollInterval) {
+                $0.watcher?.pollBattery()
+                $0.expireSleep()
+            },
             repeating(Self.saveInterval) { $0.saveTyping() },
             // Picks up a permission granted in System Settings without a relaunch.
             repeating(2) { $0.checkAccess() },
         ]
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.saveTyping() }
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.macSleptAt = .now }
+        }
+        workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.wakeSettleTime) {
+                    MainActor.assumeIsolated { self?.macSleptAt = nil }
+                }
+            }
         }
         if lowBatteryAlerts { requestNotificationPermission() }
     }
@@ -115,6 +147,7 @@ final class KeyboardMonitor {
     var displayName: String { info?.name ?? pairedName ?? "Keyboard" }
     var isKeychron: Bool { displayName.localizedCaseInsensitiveContains("keychron") }
     var isConnected: Bool { connection == .connected }
+    var isAsleep: Bool { if case .asleep = connection { true } else { false } }
     var supportsBattery: Bool { info?.hasBatteryReport ?? true }
     var trend: BatteryTrend { history.trend }
 
@@ -142,6 +175,12 @@ final class KeyboardMonitor {
         ticker = nil
     }
 
+    /// Stands in a connection state for `--snapshot`, so each one can be rendered on demand.
+    func preview(_ state: ConnectionState) {
+        isPreview = true
+        connection = state
+    }
+
     // MARK: Actions
 
     func requestAccess() {
@@ -153,7 +192,12 @@ final class KeyboardMonitor {
         guard let device = BluetoothLink.pairedKeyboard(preferring: info?.address ?? lastAddress) else { return }
         isTogglingLink = true
         Task { @MainActor in
-            if device.isConnected() { device.closeConnection() } else { device.openConnection() }
+            if device.isConnected() {
+                userDisconnected = true
+                device.closeConnection()
+            } else {
+                device.openConnection()
+            }
             try? await Task.sleep(for: .seconds(2))
             isTogglingLink = false
             refreshPairing()
@@ -171,15 +215,27 @@ final class KeyboardMonitor {
         case .attached(let info):
             self.info = info
             connection = .connected
-            sessionStart = .now
-            keysThisSession = 0
+            let resumes = sessionStart != nil && linkLostAt.map { Date.now.timeIntervalSince($0) <= Self.sessionGrace } == true
+            if !resumes {
+                sessionStart = .now
+                keysThisSession = 0
+            }
+            linkUpAt = .now
+            linkLostAt = nil
+            userDisconnected = false
+            macSleptAt = nil
             UserDefaults.standard.set(info.address, forKey: Keys.lastAddress)
             refreshPairing()
             loadFirmware(address: info.address)
         case .removed:
-            UserDefaults.standard.set(Date.now, forKey: Keys.lastSeen)
-            connection = .disconnected(lastSeen: .now)
-            sessionStart = nil
+            // A drop the Mac slept through is reported on wake; the link really went when the Mac did.
+            let lostAt = macSleptAt ?? .now
+            UserDefaults.standard.set(lostAt, forKey: Keys.lastSeen)
+            linkLostAt = lostAt
+            let asleep = wentToSleep(at: lostAt)
+            UserDefaults.standard.set(asleep, forKey: Keys.lastSeenAsleep)
+            connection = asleep ? .asleep(since: lostAt) : .disconnected(lastSeen: lostAt)
+            userDisconnected = false
         case .battery(let percent):
             battery = percent
             batteryUpdated = .now
@@ -190,12 +246,28 @@ final class KeyboardMonitor {
             typing.record(usage: usage, at: .now)
             typingDirty = true
             keysThisSession += 1
+            lastKeyAt = .now
             if usage == KeyUsage.capsLock, ticker != nil { refreshSystemModes() }
         }
     }
 
+    /// The keyboard sleeping looks like any other link drop, except for when it happens:
+    /// after a full idle timeout with no keypress, or while the Mac itself was asleep.
+    private func wentToSleep(at lostAt: Date) -> Bool {
+        guard isKeychron, !userDisconnected else { return false }
+        if macSleptAt != nil { return true }
+        guard let idleSince = [lastKeyAt, linkUpAt].compactMap({ $0 }).max() else { return false }
+        return lostAt.timeIntervalSince(idleSince) >= Self.autoSleepAfter - Self.sleepDetectionSlack
+    }
+
+    private func expireSleep() {
+        guard case .asleep(let since) = connection, Date.now.timeIntervalSince(since) > Self.asleepExpiry else { return }
+        connection = .disconnected(lastSeen: since)
+    }
+
     private func tick() {
         now = .now
+        expireSleep()
         rollOverIfNeeded(now)
         snapshot = TypingSnapshot(stats: &typing, history: typingHistory, keysThisSession: keysThisSession, now: now)
         refreshSystemModes()
@@ -234,14 +306,25 @@ final class KeyboardMonitor {
     private var lastAddress: String? { UserDefaults.standard.string(forKey: Keys.lastAddress) }
 
     private func refreshPairing() {
+        guard !isPreview else { return }
         guard let device = BluetoothLink.pairedKeyboard(preferring: info?.address ?? lastAddress) else {
             if info == nil { connection = .notPaired }
             return
         }
         pairedName = device.name
         if info != nil { return }
-        let lastSeen = device.recentAccessDate() ?? (UserDefaults.standard.object(forKey: Keys.lastSeen) as? Date)
-        connection = device.isConnected() ? .connected : .disconnected(lastSeen: lastSeen)
+        // Our own record of the link dropping comes first: macOS refreshes its access date on its own,
+        // so it can read minutes old for a keyboard that has been off for hours.
+        let lastSeen = (UserDefaults.standard.object(forKey: Keys.lastSeen) as? Date) ?? device.recentAccessDate()
+        if device.isConnected() {
+            connection = .connected
+        } else if let lastSeen, UserDefaults.standard.bool(forKey: Keys.lastSeenAsleep) {
+            // Relaunched while the keyboard was napping.
+            connection = .asleep(since: lastSeen)
+            expireSleep()
+        } else {
+            connection = .disconnected(lastSeen: lastSeen)
+        }
     }
 
     private func refreshSystemModes() {

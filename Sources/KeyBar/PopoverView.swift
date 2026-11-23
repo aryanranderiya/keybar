@@ -20,14 +20,14 @@ struct PopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header.padding(.bottom, 2)
-            if monitor.isConnected {
+            if monitor.connection == .notPaired {
+                notPairedCard
+            } else {
                 if !monitor.hasAccess { accessCard }
                 batteryCard
                 typingCard
                 tiles
-                details
-            } else {
-                disconnectedCard
+                if monitor.info != nil { details }
             }
             Divider().padding(.horizontal, 6).padding(.vertical, 2)
             options
@@ -54,9 +54,10 @@ struct PopoverView: View {
                 Text(statusLine).font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
-            if monitor.isConnected, monitor.supportsBattery {
-                BatteryRing(percent: monitor.battery, isCharging: monitor.trend == .charging)
+            if monitor.connection != .notPaired, monitor.supportsBattery, monitor.battery != nil || monitor.isConnected {
+                BatteryRing(percent: monitor.battery, isCharging: monitor.isConnected && monitor.trend == .charging)
                     .frame(width: 30, height: 30)
+                    .opacity(monitor.isConnected ? 1 : 0.5)
             }
         }
         .padding(.horizontal, 2)
@@ -67,9 +68,11 @@ struct PopoverView: View {
         case .connected:
             let session = monitor.sessionStart.map { " · " + Format.duration(monitor.now.timeIntervalSince($0)) } ?? ""
             return "Connected" + session
+        case .asleep:
+            return "Asleep · press a key to wake"
         case .disconnected(let lastSeen):
-            guard let lastSeen else { return "Not connected" }
-            return "Last seen " + lastSeen.formatted(.relative(presentation: .named))
+            guard let lastSeen else { return "Off or out of range" }
+            return "Off or out of range · seen \(Format.duration(monitor.now.timeIntervalSince(lastSeen))) ago"
         case .notPaired:
             return "No Bluetooth keyboard paired"
         }
@@ -138,16 +141,22 @@ struct PopoverView: View {
     private var batteryUpdatedText: String? {
         guard let updated = monitor.batteryUpdated else { return nil }
         let age = monitor.now.timeIntervalSince(updated)
+        guard monitor.isConnected else { return "As of \(Format.duration(age)) ago" }
         return age < 60 ? "Updated just now" : "Updated \(Format.duration(age)) ago"
     }
 
     private var batteryCaption: String {
         guard monitor.supportsBattery else { return "Not reported" }
-        guard monitor.battery != nil else { return monitor.hasAccess ? "Waiting for keyboard" : "Needs permission" }
+        guard monitor.battery != nil else {
+            return !monitor.hasAccess ? "Needs permission" : monitor.isConnected ? "Waiting for keyboard" : "No reading yet"
+        }
+        // The estimate holds through a nap. Once the keyboard is off, the last reading is all there is.
         switch monitor.trend {
-        case .charging: return "Charging"
-        case .discharging(let remaining): return "About \(Format.longDuration(remaining)) left"
-        case .unknown: return "Estimating time left"
+        case .charging where monitor.isConnected: return "Charging"
+        case .discharging(let remaining) where monitor.isConnected || monitor.isAsleep:
+            return "About \(Format.longDuration(remaining)) left"
+        case .unknown where monitor.isConnected: return "Estimating time left"
+        default: return "Last reading"
         }
     }
 
@@ -174,9 +183,10 @@ struct PopoverView: View {
         let points = (timeline?.points ?? []).map { SparkChart.Point(x: $0.start, y: $0.wpm.rounded()) }
         let hoveredPoint = hoveredWPM.flatMap { hovered in timeline?.points.first { $0.start == hovered.x } }
         HStack(alignment: .firstTextBaseline) {
-            bigNumber("\(hoveredWPM.map { Int($0.y) } ?? typing.liveWPM)", unit: "wpm")
+            // Nothing is live while the keyboard is away, so the headline is the day so far.
+            bigNumber("\(hoveredWPM.map { Int($0.y) } ?? (monitor.isConnected ? typing.liveWPM : typing.averageWPM ?? 0))", unit: "wpm")
             Spacer()
-            Text(hoveredPoint.map { timeRange($0, minutes: timeline!.minutesPerPoint) } ?? "Right now")
+            Text(hoveredPoint.map { timeRange($0, minutes: timeline!.minutesPerPoint) } ?? (monitor.isConnected ? "Right now" : "Average today"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
         }
@@ -287,7 +297,12 @@ struct PopoverView: View {
             GridRow {
                 StatTile(title: "Caps Lock", symbol: "capslock", value: monitor.capsLockOn ? "On" : "Off",
                          caption: monitor.capsLockOn ? "Typing in capitals" : "Lowercase", isHighlighted: monitor.capsLockOn)
-                if monitor.isKeychron { sleepTile } else { sessionTile }
+                switch monitor.connection {
+                case .asleep(let since): asleepTile(since: since)
+                case .connected where monitor.isKeychron: sleepTile
+                case .connected: sessionTile
+                default: offTile
+                }
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -297,6 +312,16 @@ struct PopoverView: View {
         let session = monitor.sessionStart.map { monitor.now.timeIntervalSince($0) } ?? 0
         return StatTile(title: "Connected", symbol: "dot.radiowaves.left.and.right",
                         value: Format.duration(session), caption: "This session")
+    }
+
+    private func asleepTile(since: Date) -> some View {
+        StatTile(title: "Auto-sleep", symbol: "moon", value: "Asleep",
+                 caption: "Since " + since.formatted(date: .omitted, time: .shortened))
+    }
+
+    private var offTile: some View {
+        StatTile(title: "Connection", symbol: "dot.radiowaves.left.and.right", value: "Off",
+                 caption: "Or out of range")
     }
 
     private var sleepTile: some View {
@@ -345,22 +370,17 @@ struct PopoverView: View {
         }
     }
 
-    private var disconnectedCard: some View {
+    private var notPairedCard: some View {
         Card {
             VStack(spacing: 8) {
                 Image(nsImage: KeycapGlyph.image(pointSize: 30, dimmed: true))
                     .renderingMode(.template)
                     .foregroundStyle(.secondary)
-                Text(monitor.connection == .notPaired
-                     ? "Pair a Bluetooth keyboard in Bluetooth settings to see it here."
-                     : "Press any key to wake the keyboard, or connect it below.")
+                Text("Pair a Bluetooth keyboard in Bluetooth settings to see it here.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                if let battery = monitor.battery {
-                    Text("Battery was \(battery)% when last seen").font(.system(size: 11)).foregroundStyle(.tertiary)
-                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
