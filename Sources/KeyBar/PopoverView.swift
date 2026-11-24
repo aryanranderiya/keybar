@@ -128,9 +128,10 @@ struct PopoverView: View {
     /// How long a full charge lasts, and how that compares with the first one measured.
     private var batteryHealth: String? {
         let lives = monitor.history.chargeLives
-        guard let latest = lives.last else { return nil }
+        let awake = monitor.history.awakeHoursPerCharge.map { "\(Int($0.rounded())) hours awake" }
+        guard let latest = lives.last else { return awake.map { "A full charge lasts about \($0)" } }
         let days = Int(latest.daysPerCharge.rounded())
-        var text = "A full charge lasts about \(days) days"
+        var text = "A full charge lasts about \(days) days" + (awake.map { ", \($0)" } ?? "")
         if let first = lives.first, latest.measuredAt.timeIntervalSince(first.measuredAt) >= 30 * 86_400,
            abs(first.daysPerCharge - latest.daysPerCharge) >= 1 {
             text += " · \(Int(first.daysPerCharge.rounded())) in \(first.measuredAt.formatted(.dateTime.month(.abbreviated)))"

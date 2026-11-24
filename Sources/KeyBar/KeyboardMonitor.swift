@@ -81,6 +81,7 @@ final class KeyboardMonitor {
         static let lastAddress = "lastAddress"
         static let lastSeen = "lastSeen"
         static let lastSeenAsleep = "lastSeenAsleep"
+        static let awakeSeconds = "awakeSeconds"
         static let lastAlert = "lastAlertThreshold"
         static let chargeReminderSent = "chargeReminderSent"
         static func firmware(_ address: String) -> String { "firmware-\(address)" }
@@ -97,6 +98,8 @@ final class KeyboardMonitor {
     @ObservationIgnored private var userDisconnected = false
     @ObservationIgnored private var macSleptAt: Date?
     @ObservationIgnored private var isPreview = false
+    @ObservationIgnored private var awakeSeconds = UserDefaults.standard.double(forKey: Keys.awakeSeconds)
+    @ObservationIgnored private var awakeCountedTo: Date?
     @ObservationIgnored private var watcher: HIDKeyboardWatcher?
     @ObservationIgnored private var ticker: Timer?
     @ObservationIgnored private var timers: [Timer] = []
@@ -126,7 +129,10 @@ final class KeyboardMonitor {
             repeating(2) { $0.checkAccess() },
         ]
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.saveTyping() }
+            MainActor.assumeIsolated {
+                self?.saveTyping()
+                self?.countAwake(until: .now)
+            }
         }
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
@@ -221,6 +227,7 @@ final class KeyboardMonitor {
                 keysThisSession = 0
             }
             linkUpAt = .now
+            awakeCountedTo = .now
             linkLostAt = nil
             userDisconnected = false
             macSleptAt = nil
@@ -232,6 +239,8 @@ final class KeyboardMonitor {
             let lostAt = macSleptAt ?? .now
             UserDefaults.standard.set(lostAt, forKey: Keys.lastSeen)
             linkLostAt = lostAt
+            countAwake(until: lostAt)
+            awakeCountedTo = nil
             let asleep = wentToSleep(at: lostAt)
             UserDefaults.standard.set(asleep, forKey: Keys.lastSeenAsleep)
             connection = asleep ? .asleep(since: lostAt) : .disconnected(lastSeen: lostAt)
@@ -239,7 +248,8 @@ final class KeyboardMonitor {
         case .battery(let percent):
             battery = percent
             batteryUpdated = .now
-            history.record(percent)
+            countAwake(until: .now)
+            history.record(percent, awake: awakeSeconds)
             evaluateLowBattery(percent)
         case .keyDown(let usage):
             rollOverIfNeeded(.now)
@@ -258,6 +268,14 @@ final class KeyboardMonitor {
         if macSleptAt != nil { return true }
         guard let idleSince = [lastKeyAt, linkUpAt].compactMap({ $0 }).max() else { return false }
         return lostAt.timeIntervalSince(idleSince) >= Self.autoSleepAfter - Self.sleepDetectionSlack
+    }
+
+    /// Adds the connected time since the last count to the running total.
+    private func countAwake(until date: Date) {
+        guard let from = awakeCountedTo else { return }
+        awakeSeconds += max(0, date.timeIntervalSince(from))
+        awakeCountedTo = date
+        UserDefaults.standard.set(awakeSeconds, forKey: Keys.awakeSeconds)
     }
 
     private func expireSleep() {

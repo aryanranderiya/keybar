@@ -3,6 +3,9 @@ import Foundation
 struct BatterySample: Codable, Equatable, Identifiable {
     var date: Date
     var percent: Int
+    /// Running total of seconds the keyboard has spent connected, as of this reading.
+    /// Missing on readings stored before awake time was tracked.
+    var awake: TimeInterval?
     var id: Date { date }
 }
 
@@ -33,6 +36,12 @@ struct BatteryHistory {
     /// A gap this long with the level unchanged means the keyboard sat switched off, not in use.
     private static let absenceGap: TimeInterval = 4 * 86_400
     private static let absenceDrop = 1
+    /// Awake hours per charge needs this much drain and connected time behind it.
+    private static let awakeMinimumDrop = 10
+    private static let awakeMinimumTime: TimeInterval = 3 * 3_600
+    /// A drop this big with almost no connected time was spent on another computer.
+    private static let elsewhereDrop = 2
+    private static let elsewhereAwake: TimeInterval = 10 * 60
 
     private(set) var samples: [BatterySample]
 
@@ -42,11 +51,11 @@ struct BatteryHistory {
     }
 
     /// Stores a reading when the level changed or the last stored one is older than the heartbeat.
-    mutating func record(_ percent: Int, at date: Date = .now) {
+    mutating func record(_ percent: Int, awake: TimeInterval, at date: Date = .now) {
         if let last = samples.last, last.percent == percent, date.timeIntervalSince(last.date) < Self.heartbeat {
             return
         }
-        samples.append(BatterySample(date: date, percent: percent))
+        samples.append(BatterySample(date: date, percent: percent, awake: awake))
         samples.removeAll { date.timeIntervalSince($0.date) > Self.retention }
         if let data = try? JSONEncoder().encode(samples) {
             UserDefaults.standard.set(data, forKey: Self.storageKey)
@@ -98,6 +107,27 @@ struct BatteryHistory {
             }
         }
         return lives
+    }
+
+    /// Hours the keyboard stays awake (connected) on one full charge. Unlike days per charge this
+    /// doesn't depend on how much you use it, so it tracks the battery itself.
+    var awakeHoursPerCharge: Double? {
+        var drop = 0
+        var awake: TimeInterval = 0
+        for (before, after) in zip(samples, samples.dropFirst()) {
+            guard let from = before.awake, let to = after.awake, after.percent <= before.percent else { continue }
+            let spent = to - from
+            // The counter only runs while connected, so it can't outpace the clock.
+            guard spent >= 0, spent <= after.date.timeIntervalSince(before.date) + 60 else { continue }
+            let fell = before.percent - after.percent
+            if fell >= Self.elsewhereDrop, spent < Self.elsewhereAwake { continue }
+            // Sitting at 100% is usually sitting on the charging cable.
+            if before.percent == 100, fell == 0 { continue }
+            drop += fell
+            awake += spent
+        }
+        guard drop >= Self.awakeMinimumDrop, awake >= Self.awakeMinimumTime else { return nil }
+        return awake / 3_600 * 100 / Double(drop)
     }
 
     /// Time between two readings, leaving out stretches the keyboard spent switched off.
